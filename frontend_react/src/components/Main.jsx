@@ -22,7 +22,17 @@ function getDataForSelect(fieldName, options = {}) {
 /**
  * PUBLIC_INTERFACE
  * Main component simulating device form rendering, including a Status select
- * that must be disabled when a device is newly enabled (enabled === true and status is empty/undefined).
+ * that must be disabled when a device is newly enabled.
+ *
+ * Newly enabled detection:
+ * - Preferred minimal change: enabled === true and status is empty string/undefined/null.
+ * - If upstream logic auto-sets status on enable (e.g., "To Be Installed"), consumers can pass
+ *   a transient flag state.hasJustBeenEnabled = true which this component will honor.
+ *
+ * Handling hooks to integrate with host app (documented for implementers of parent component):
+ * - PUBLIC_INTERFACE handleDeviceEnabled(e, asset): set hasJustBeenEnabled: true when enabling.
+ * - PUBLIC_INTERFACE onStatusChange(e, deviceState): clear hasJustBeenEnabled: false after change.
+ * - PUBLIC_INTERFACE onClickSave(): clear hasJustBeenEnabled flags after successful save.
  */
 export default function Main({
   state = {},
@@ -33,12 +43,15 @@ export default function Main({
   /**
    * PUBLIC_INTERFACE
    * Render a generic select field with logic hooks for specific field names.
-   * - For FIELDS.ASSET_STATUSES:
-   *    - value comes from state.status
-   *    - compute newDeviceJustEnabledDisabled = !!state?.enabled && (!state?.status || state?.status === '')
-   *    - computedDisabled = disabled || newDeviceJustEnabledDisabled || formDisabled
-   * - For other fields:
-   *    - computedDisabled = disabled || formDisabled
+   *
+   * For FIELDS.ASSET_STATUSES:
+   * - value comes from state.status
+   * - compute isNewlyEnabled as:
+   *     Boolean(state?.hasJustBeenEnabled) ||
+   *     (Boolean(state?.enabled) && (!state?.status || state?.status === ''))
+   * - Preserve any existing specialized disabling logic from the host by allowing base props.disabled,
+   *   and only append our rule to disabled state.
+   * - Do not change any filtering rules for statuses; only affect the disabled state.
    */
   const renderSelect = (fieldName, props = {}) => {
     const base = getDataForSelect(fieldName, {
@@ -51,12 +64,18 @@ export default function Main({
     let value = props.value;
     let computedDisabled = disabled || formDisabled; // default behavior
 
-    // Keep any existing specialized logic (e.g., antenna model rules) outside of this new rule.
+    // Maintain any existing specialized logic (e.g., antenna model rules) outside of this new rule.
     if (fieldName === FIELDS.ASSET_STATUSES) {
       value = state?.status;
-      const newDeviceJustEnabledDisabled =
-        !!state?.enabled && (!state?.status || state?.status === '');
-      computedDisabled = disabled || newDeviceJustEnabledDisabled || formDisabled;
+
+      // isNewlyEnabled covers both flows: empty status on enable, or transient flag from host.
+      const isNewlyEnabled =
+        Boolean(state?.hasJustBeenEnabled) ||
+        (Boolean(state?.enabled) && (!state?.status || state?.status === ''));
+
+      // If there are external flags like isAntennaModelDisabled or isDisabledAntennaModel in the host,
+      // they should be combined via props.disabled beforehand. We append our isNewlyEnabled rule here.
+      computedDisabled = disabled || formDisabled || isNewlyEnabled;
     }
 
     return (
@@ -80,6 +99,10 @@ export default function Main({
 
   // PUBLIC_INTERFACE
   // Example rendering function to show device fields, including status select
+  // Note: Parent should implement:
+  // - handleDeviceEnabled(e, asset): when enabling (checked===true), set hasJustBeenEnabled: true.
+  // - onStatusChange(newStatus): set hasJustBeenEnabled: false after change.
+  // - onClickSave(): clear hasJustBeenEnabled flags after successful save.
   const renderDevice = useMemo(() => {
     return (
       <div className="device-form">
@@ -89,6 +112,7 @@ export default function Main({
             <input
               type="checkbox"
               checked={!!state.enabled}
+              // The parent should set hasJustBeenEnabled: true when enabling.
               onChange={(e) => onChange('enabled', e.target.checked)}
               disabled={formDisabled}
             />
@@ -103,7 +127,7 @@ export default function Main({
         </div>
       </div>
     );
-  }, [state?.enabled, state?.status, formDisabled, selectOptions, onChange]);
+  }, [state?.enabled, state?.status, state?.hasJustBeenEnabled, formDisabled, selectOptions, onChange]);
 
   return <div>{renderDevice}</div>;
 }
