@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useCallback } from 'react';
 
 // PUBLIC_INTERFACE
 export const FIELDS = {
@@ -39,7 +39,44 @@ export default function Main({
   formDisabled = false,
   selectOptions = {},
   onChange = () => {},
+  // Optional callbacks a host may wire; we no-op if not provided
+  onStatusChange, // (newStatus) => void
+  onClickSave,    // () => Promise<boolean> | boolean
 }) {
+  // Wrap status change to ensure transient flag is cleared as required by the spec.
+  const handleStatusChange = useCallback(
+    async (newStatus) => {
+      // Notify host first so its own logic runs (e.g., filtering options, validations)
+      if (typeof onStatusChange === 'function') {
+        onStatusChange(newStatus);
+      }
+      // Ensure transient flag is cleared for UX to proceed.
+      // Parent reducer should merge this appropriately; here we pass a structured change hint.
+      onChange('status', newStatus);
+      onChange('hasJustBeenEnabled', false);
+    },
+    [onStatusChange, onChange]
+  );
+
+  // Optional save click handler wrapper to ensure transient flags are cleared after successful save.
+  const handleClickSave = useCallback(
+    async () => {
+      if (typeof onClickSave === 'function') {
+        try {
+          const res = await onClickSave();
+          const statusIsSuccess = res === true;
+          if (statusIsSuccess) {
+            // Clear transient flag after successful save.
+            onChange('clearHasJustBeenEnabledForAll', true);
+          }
+        } catch (e) {
+          // swallow errors here; host likely handles surfacing them
+        }
+      }
+    },
+    [onClickSave, onChange]
+  );
+
   /**
    * PUBLIC_INTERFACE
    * Render a generic select field with logic hooks for specific field names.
@@ -73,8 +110,7 @@ export default function Main({
         Boolean(state?.hasJustBeenEnabled) ||
         (Boolean(state?.enabled) && (!state?.status || state?.status === ''));
 
-      // If there are external flags like isAntennaModelDisabled or isDisabledAntennaModel in the host,
-      // they should be combined via props.disabled beforehand. We append our isNewlyEnabled rule here.
+      // Append the isNewlyEnabled rule to existing disabled computation.
       computedDisabled = disabled || formDisabled || isNewlyEnabled;
     }
 
@@ -83,7 +119,13 @@ export default function Main({
         name={fieldName}
         value={value ?? ''}
         disabled={computedDisabled}
-        onChange={(e) => onChange(fieldName, e.target.value)}
+        onChange={(e) => {
+          if (fieldName === FIELDS.ASSET_STATUSES) {
+            handleStatusChange(e.target.value);
+          } else {
+            onChange(fieldName, e.target.value);
+          }
+        }}
       >
         <option value="" disabled>
           Select...
@@ -101,8 +143,8 @@ export default function Main({
   // Example rendering function to show device fields, including status select
   // Note: Parent should implement:
   // - handleDeviceEnabled(e, asset): when enabling (checked===true), set hasJustBeenEnabled: true.
-  // - onStatusChange(newStatus): set hasJustBeenEnabled: false after change.
-  // - onClickSave(): clear hasJustBeenEnabled flags after successful save.
+  // - onStatusChange(newStatus): set hasJustBeenEnabled: false after change (handled by wrapper too).
+  // - onClickSave(): clear hasJustBeenEnabled flags after successful save (handled by wrapper too).
   const renderDevice = useMemo(() => {
     return (
       <div className="device-form">
@@ -112,7 +154,8 @@ export default function Main({
             <input
               type="checkbox"
               checked={!!state.enabled}
-              // The parent should set hasJustBeenEnabled: true when enabling.
+              // The parent should set hasJustBeenEnabled: true when enabling and clear when disabling.
+              // We forward the change up; host logic stays intact.
               onChange={(e) => onChange('enabled', e.target.checked)}
               disabled={formDisabled}
             />
@@ -125,9 +168,27 @@ export default function Main({
             disabled: false, // base disabled; combined inside renderSelect with new rule and formDisabled
           })}
         </div>
+
+        {/* Example Save button to illustrate clearing transient flag post-save if the host wires it */}
+        {typeof onClickSave === 'function' && (
+          <div className="actions">
+            <button type="button" onClick={handleClickSave} disabled={formDisabled}>
+              Save
+            </button>
+          </div>
+        )}
       </div>
     );
-  }, [state?.enabled, state?.status, state?.hasJustBeenEnabled, formDisabled, selectOptions, onChange]);
+  }, [
+    state?.enabled,
+    state?.status,
+    state?.hasJustBeenEnabled,
+    formDisabled,
+    selectOptions,
+    onChange,
+    onClickSave,
+    handleClickSave,
+  ]);
 
   return <div>{renderDevice}</div>;
 }
